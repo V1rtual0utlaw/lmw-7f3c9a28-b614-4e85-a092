@@ -1,0 +1,46 @@
+name: Test and publish factory release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate Windows setup scripts
+        shell: pwsh
+        run: |
+          Get-ChildItem *.ps1 | ForEach-Object {
+            $tokens=$null; $errors=$null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$tokens,[ref]$errors) | Out-Null
+            if ($errors) { $errors | Out-String | Write-Error; exit 1 }
+          }
+      - name: Test application
+        run: python -m unittest discover -s tests -v
+      - name: Verify release tag
+        shell: python
+        run: |
+          import json, os
+          version=json.load(open('version.json'))['version']
+          if os.environ['GITHUB_REF_TYPE']=='tag':
+              assert os.environ['GITHUB_REF_NAME']=='v'+version, 'Tag must match version.json'
+      - name: Package release
+        run: python scripts/package_release.py --repository ${{ github.repository }}
+      - name: Publish tested archive
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$(python -c 'import json; print(json.load(open("version.json"))["version"])')"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; leaving it unchanged."
+          else
+            gh release create "$TAG" dist/True-Science-Stories-Factory.zip --target "$GITHUB_SHA" --title "$TAG" --notes "Local application update."
+          fi

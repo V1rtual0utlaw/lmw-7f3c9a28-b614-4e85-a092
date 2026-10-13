@@ -1,0 +1,1 @@
+{"ollama":"http://127.0.0.1:11434","model":"qwen2.5:7b","comfy":"http://127.0.0.1:8188","workflow":"workflow.json","piper":"piper","voice":"models/voice.onnx"}

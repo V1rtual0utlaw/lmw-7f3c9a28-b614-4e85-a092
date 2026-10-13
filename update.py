@@ -2,7 +2,7 @@
 import argparse, datetime, hashlib, json, os, re, shutil, sys, tempfile, urllib.request, urllib.parse, zipfile
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
-ALLOWED={'app.py','factory.py','research.py','index.html','launch.py','doctor.py','update.py','README.md','version.json','update-channel.json','START_WINDOWS.bat','UPDATE_FACTORY.bat','SETUP_AND_START.bat','SETUP.ps1','BOOTSTRAP.ps1'}
+ALLOWED={'media.py','app.py','factory.py','research.py','index.html','launch.py','doctor.py','update.py','README.md','version.json','update-channel.json','START_WINDOWS.bat','UPDATE_FACTORY.bat','SETUP_AND_START.bat','SETUP.ps1','BOOTSTRAP.ps1'}
 REQUIRED={'app.py','factory.py','index.html','version.json'}
 
 def version_tuple(value): return tuple(int(x) for x in value.split('.'))

@@ -2,6 +2,7 @@ import json, queue, threading, uuid, webbrowser
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from factory import Factory, ROOT
+from factory import VOICES
 JOBS={}; Q=queue.Queue(); LOCK=threading.Lock()
 def worker():
     while True:
@@ -11,7 +12,9 @@ def worker():
             (ROOT/'outputs'/ident/'status.json').write_text(json.dumps(JOBS[ident]),encoding='utf-8')
         try:
             JOBS[ident]['state']='running'
-            Factory(json.loads((ROOT/'config.json').read_text(encoding='utf-8-sig')),log).produce(ROOT/'outputs'/ident,data['topic'],data['minutes'],data['notes'],data['demo'])
+            cfg=json.loads((ROOT/'config.json').read_text(encoding='utf-8-sig'))
+            cfg.update(voice_engine='kokoro',voice_id=data.get('voice_id','am_michael'),voice_speed=data.get('voice_speed',1.02),captions=True)
+            Factory(cfg,log).produce(ROOT/'outputs'/ident,data['topic'],data['minutes'],data['notes'],data['demo'])
             JOBS[ident]['state']='review required'
         except Exception as e: JOBS[ident]['state']='failed'; log(str(e))
         finally: log('Job ended'); Q.task_done()
@@ -36,6 +39,9 @@ class Handler(SimpleHTTPRequestHandler):
             d=json.loads(self.rfile.read(size)); d['minutes']=int(d.get('minutes',10)); d['demo']=bool(d.get('demo',False))
             if not 1<=d['minutes']<=20 or not str(d.get('topic','')).strip(): raise ValueError('Topic and duration required')
             d['notes']=str(d.get('notes',''))
+            d['voice_id']=d.get('voice_id','am_michael')
+            d['voice_speed']=float(d.get('voice_speed',1.02))
+            if d['voice_id'] not in VOICES or not .85<=d['voice_speed']<=1.2:raise ValueError('Select a supported voice and speed between 0.85 and 1.20')
             ident=uuid.uuid4().hex[:12]; (ROOT/'outputs'/ident).mkdir(parents=True)
             (ROOT/'outputs'/ident/'request.json').write_text(json.dumps(d),encoding='utf-8')
             with LOCK: JOBS[ident]={'state':'queued','topic':d['topic'],'log':[]}

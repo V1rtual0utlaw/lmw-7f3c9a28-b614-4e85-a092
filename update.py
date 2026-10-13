@@ -113,6 +113,8 @@ def github_update(root=ROOT):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('archive',nargs='?');p.add_argument('--auto',action='store_true');a=p.parse_args()
+    if a.auto and running():
+        raise RuntimeError('The factory is still running. Close its original command window before updating; closing the browser tab does not stop the server.')
     if a.auto:
         try:
             if github_update(): return

@@ -75,6 +75,11 @@ def start():
         wait(cfg['comfy']+'/system_stats',p,300)
     if '--prepare' in sys.argv:return
     if ready('http://127.0.0.1:8765/api/jobs'):
+        expected=json.loads((ROOT/'version.json').read_text())['version']
+        try:
+            with urllib.request.urlopen('http://127.0.0.1:8765/api/info',timeout=3) as r: active=json.load(r)['version']
+        except (OSError,ValueError,KeyError):active='unknown/older build'
+        if active!=expected:raise RuntimeError(f'An older factory server is still running ({active}); installed version is {expected}. Close its original command window, then run START_WINDOWS.bat again.')
         import webbrowser
         webbrowser.open('http://127.0.0.1:8765');return
     app=ROOT/'app.py'

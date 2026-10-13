@@ -274,9 +274,24 @@ class Factory:
             vf+=f",subtitles=filename='{caption.name}'"
         run(['ffmpeg','-y','-loop','1','-i',image,'-i',audio,'-vf',vf,'-t',d,'-r','24','-c:v','libx264','-preset','fast','-crf','23','-pix_fmt','yuv420p','-c:a','aac','-af','loudnorm','-movflags','+faststart',out],cwd=out.parent)
         if abs(duration(out)-d)>1:raise RuntimeError('NC: render duration mismatch')
+    def preview(self,jobdir):
+        jobdir=Path(jobdir);jobdir.mkdir(parents=True,exist_ok=True)
+        self.log('Development preview — real Kokoro voice and burned-in documentary captions')
+        self.log(f"Voice: {self.cfg.get('voice_id','am_michael')}; documentary captions: ON")
+        text="This is your development preview. You're hearing the new narrator, and these captions should follow the words as they're spoken. The full documentary uses readable white captions. Shorts highlight the current word in yellow. If you can hear this voice and see these words, the new production settings are working."
+        image=jobdir/'preview.png';audio=jobdir/'preview.wav'
+        run(['ffmpeg','-y','-f','lavfi','-i','color=c=0x15354c:s=1280x720','-frames:v','1',image])
+        self.voice(text,audio)
+        self.render(image,audio,jobdir/'documentary.mp4',text=text)
+        self.render(image,audio,jobdir/'short-preview.mp4',True,text)
+        report={'status':'PREVIEW_READY','voice':self.cfg.get('voice_id','am_michael'),'voice_engine':'kokoro','documentary_captions':True,'shorts_captions':True,'duration_seconds':duration(audio)}
+        (jobdir/'review.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+        self.log('Preview ready — play documentary.mp4 or short-preview.mp4')
+        return report
     def produce(self,jobdir,topic,minutes,notes,demo=False):
         jobdir=Path(jobdir); jobdir.mkdir(parents=True,exist_ok=True)
         self.debugdir=jobdir
+        self.log(f"Narrator: {self.cfg.get('voice_engine','kokoro')} / {self.cfg.get('voice_id','am_michael')}; documentary and Shorts captions: {'ON' if self.cfg.get('captions',True) and not demo else 'OFF (demo or settings)'}")
         planpath=jobdir/'script.json'
         if planpath.exists(): plan=json.loads(planpath.read_text(encoding='utf-8-sig'))
         else:

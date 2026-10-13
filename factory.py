@@ -7,7 +7,9 @@ ROOT=Path(__file__).resolve().parent
 def request(url, data=None):
     body=None if data is None else json.dumps(data).encode()
     req=urllib.request.Request(url,body,{'Content-Type':'application/json'})
-    with urllib.request.urlopen(req,timeout=900) as r: return json.load(r)
+    with urllib.request.urlopen(req,timeout=900) as r:
+        content=r.read()
+        return json.loads(content) if content.strip() else {}
 
 def run(args, text=None, cwd=None):
     p=subprocess.run([str(a) for a in args],input=text,text=True,capture_output=True,timeout=1800,cwd=cwd)
@@ -173,6 +175,29 @@ def write_captions(words,path,vertical=False):
     return path
 
 
+def file_sha256(path):
+    h=hashlib.sha256()
+    with Path(path).open('rb') as f:
+        for b in iter(lambda:f.read(1024*1024),b''):h.update(b)
+    return h.hexdigest()
+
+def animation_indices(count):
+    slots=min(3,count)
+    return {round(i*(count-1)/max(1,slots-1)) for i in range(slots)} if count else set()
+
+def wan_workflow(prompt,seed):
+    return {
+        '1':{'class_type':'UNETLoader','inputs':{'unet_name':'wan2.1_t2v_1.3B_fp16.safetensors','weight_dtype':'default'}},
+        '2':{'class_type':'CLIPLoader','inputs':{'clip_name':'umt5_xxl_fp8_e4m3fn_scaled.safetensors','type':'wan','device':'cpu'}},
+        '3':{'class_type':'VAELoader','inputs':{'vae_name':'wan_2.1_vae.safetensors'}},
+        '4':{'class_type':'CLIPTextEncode','inputs':{'text':prompt+', scientific educational animation, natural slow movement, stable anatomy, no text','clip':['2',0]}},
+        '5':{'class_type':'CLIPTextEncode','inputs':{'text':'text, subtitles, watermark, extra limbs, deformed animals, body morphing, flicker, blurry, violent scenes','clip':['2',0]}},
+        '6':{'class_type':'EmptyHunyuanLatentVideo','inputs':{'width':832,'height':480,'length':65,'batch_size':1}},
+        '7':{'class_type':'ModelSamplingSD3','inputs':{'model':['1',0],'shift':8.0}},
+        '8':{'class_type':'KSampler','inputs':{'model':['7',0],'positive':['4',0],'negative':['5',0],'latent_image':['6',0],'seed':seed,'steps':20,'cfg':6.0,'sampler_name':'uni_pc','scheduler':'simple','denoise':1.0}},
+        '10':{'class_type':'VAEDecodeTiled','inputs':{'samples':['8',0],'vae':['3',0],'tile_size':256,'overlap':64,'temporal_size':16,'temporal_overlap':4}},
+        '9':{'class_type':'SaveImage','inputs':{'images':['10',0],'filename_prefix':'TrueScienceAnimation'}}}
+
 class Factory:
     def __init__(self, cfg, log=print): self.cfg=cfg; self.log=log; self.narrator=None
     def llm(self,prompt,schema=None):
@@ -230,6 +255,82 @@ class Factory:
             if getattr(self,'debugdir',None):
                 (self.debugdir/'script-progress.json').write_text(json.dumps({'title':outline['title'],'scenes':scenes},indent=2),encoding='utf-8')
         return {'title':outline['title'],'scenes':scenes}
+    def prepare_animation(self):
+        if getattr(self,'animation_ready',False):return
+        installed=json.loads((ROOT/'runtime/installed.json').read_text(encoding='utf-8-sig'))
+        base=Path(installed['comfy'])/'ComfyUI/models'
+        specs=[('diffusion_models','wan2.1_t2v_1.3B_fp16.safetensors'),('text_encoders','umt5_xxl_fp8_e4m3fn_scaled.safetensors'),('vae','wan_2.1_vae.safetensors')]
+        self.log('Preparing Wan animation models — large one-time downloads; ComfyUI is reused')
+        metadata=request('https://huggingface.co/api/models/Comfy-Org/Wan_2.1_ComfyUI_repackaged?blobs=true')
+        entries={x['rfilename']:x for x in metadata.get('siblings',[])}
+        cachepath=ROOT/'runtime/wan-assets.json'
+        cache=json.loads(cachepath.read_text()) if cachepath.exists() else {}
+        pending=[]
+        for category,name in specs:
+            relative=f'split_files/{category}/{name}';entry=entries.get(relative,{})
+            sha=entry.get('lfs',{}).get('sha256');size=entry.get('lfs',{}).get('size')
+            if not sha or not size:raise RuntimeError('Animation model metadata missing: '+name)
+            dest=base/category/name;dest.parent.mkdir(parents=True,exist_ok=True)
+            record=cache.get(name,{})
+            if dest.exists() and dest.stat().st_size==size and record.get('sha256')==sha and record.get('mtime_ns')==dest.stat().st_mtime_ns:continue
+            if dest.exists() and dest.stat().st_size==size and file_sha256(dest)==sha:
+                cache[name]={'sha256':sha,'mtime_ns':dest.stat().st_mtime_ns};continue
+            pending.append((relative,dest,size,sha))
+        if shutil.disk_usage(base).free<sum(p[2] for p in pending)*1.1:raise RuntimeError('Not enough free disk space for the Wan model downloads')
+        for relative,dest,size,sha in pending:
+            self.log(f'Downloading {dest.name} ({size/1e9:.2f} GB)')
+            part=dest.with_suffix('.partial')
+            try:
+                req=urllib.request.Request('https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/'+relative,headers={'User-Agent':'TrueScienceStoriesFactory/0.7'})
+                with urllib.request.urlopen(req,timeout=120) as response,part.open('wb') as out:
+                    count=0;last=0
+                    while True:
+                        b=response.read(1024*1024)
+                        if not b:break
+                        count+=len(b)
+                        if count>size:raise RuntimeError('Animation download larger than expected')
+                        out.write(b)
+                        if count-last>500_000_000:self.log(f'{dest.name}: {count/size:.0%} downloaded');last=count
+                if part.stat().st_size!=size or file_sha256(part)!=sha:raise RuntimeError('Animation model checksum failed: '+dest.name)
+                part.replace(dest);cache[dest.name]={'sha256':sha,'mtime_ns':dest.stat().st_mtime_ns}
+            finally:part.unlink(missing_ok=True)
+        cachepath.write_text(json.dumps(cache,indent=2))
+        info=request(self.cfg['comfy']+'/object_info')
+        missing=set(n['class_type'] for n in wan_workflow('test',1).values())-set(info)
+        if missing:raise RuntimeError('ComfyUI needs native Wan nodes: '+', '.join(sorted(missing)))
+        # New files become visible to native loaders without reinstalling ComfyUI.
+        self.animation_ready=True
+    def animate(self,prompt,path):
+        path=Path(path)
+        if path.exists():return path
+        self.prepare_animation()
+        self.log('Generating short Wan animation; this may take many minutes on RTX 3060')
+        request(self.cfg['comfy']+'/free',{'unload_models':True,'free_memory':True})
+        seed=int.from_bytes(hashlib.sha256(prompt.encode()).digest()[:4],'big')
+        graph=wan_workflow(prompt,seed)
+        (path.with_suffix('.workflow.json')).write_text(json.dumps(graph,indent=2),encoding='utf-8')
+        pid=request(self.cfg['comfy']+'/prompt',{'prompt':graph})['prompt_id']
+        frames=path.parent/(path.stem+'-frames');frames.mkdir(exist_ok=True)
+        try:
+            for attempt in range(1800):
+                history=request(self.cfg['comfy']+'/history/'+pid).get(pid,{})
+                if history.get('status',{}).get('status_str')=='error':raise RuntimeError('NC: Wan generation failed; inspect ComfyUI logs (possible VRAM exhaustion)')
+                images=history.get('outputs',{}).get('9',{}).get('images',[])
+                if images:
+                    if len(images)!=65:raise RuntimeError(f'NC: expected 65 animation frames, received {len(images)}')
+                    for i,im in enumerate(images):
+                        with urllib.request.urlopen(self.cfg['comfy']+'/view?'+urllib.parse.urlencode(im),timeout=60) as r:(frames/f'frame-{i:03}.png').write_bytes(r.read())
+                    run(['ffmpeg','-y','-framerate','16','-i',frames/'frame-%03d.png','-c:v','libx264','-crf','20','-pix_fmt','yuv420p',path])
+                    if not 3.9<duration(path)<4.3:raise RuntimeError('NC: generated animation duration mismatch')
+                    self.log('Animation generated — animal anatomy and motion still need review')
+                    return path
+                if attempt and attempt%30==0:self.log('Wan animation is still rendering…')
+                time.sleep(2)
+            raise TimeoutError('Wan animation exceeded the one-hour limit')
+        finally:
+            # No second animation or still-image model competes for VRAM.
+            try:request(self.cfg['comfy']+'/free',{'unload_models':True,'free_memory':True})
+            except OSError:self.log('ComfyUI memory-release request failed; inspect service status before another render')
     def image(self,prompt,path):
         workflow=json.loads((ROOT/self.cfg['workflow']).read_text(encoding='utf-8-sig'))
         # API-format template values are replaced structurally, never with shell interpolation.
@@ -261,7 +362,7 @@ class Factory:
         elif self.cfg.get('piper_python'):
             run([self.cfg['piper_python'],'-m','piper','-m',ROOT/self.cfg['voice'],'-f',path],text)
         else:run([self.cfg['piper'],'--model',ROOT/self.cfg['voice'],'--output_file',path],text)
-    def render(self,image,audio,out,vertical=False,text=None):
+    def render(self,image,audio,out,vertical=False,text=None,animation=None):
         image=Path(image).resolve();audio=Path(audio).resolve();out=Path(out).resolve()
         w,h=(720,1280) if vertical else (1280,720)
         d=duration(audio)
@@ -272,7 +373,15 @@ class Factory:
             caption=write_captions(words,out.with_suffix('.ass'),vertical)
             # Relative safe generated filenames avoid Windows drive-letter filter escaping.
             vf+=f",subtitles=filename='{caption.name}'"
-        run(['ffmpeg','-y','-loop','1','-i',image,'-i',audio,'-vf',vf,'-t',d,'-r','24','-c:v','libx264','-preset','fast','-crf','23','-pix_fmt','yuv420p','-c:a','aac','-af','loudnorm','-movflags','+faststart',out],cwd=out.parent)
+        if animation:
+            seconds=min(duration(animation),d)
+            scale=f'fps=24,scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p'
+            if d>seconds+.05:
+                graph=f'[0:v]{scale},trim=duration={seconds},setpts=PTS-STARTPTS[a];[1:v]{scale},trim=duration={d-seconds},setpts=PTS-STARTPTS[b];[a][b]concat=n=2:v=1:a=0,{vf}[v]'
+            else:graph=f'[0:v]{scale},trim=duration={d},setpts=PTS-STARTPTS,{vf}[v]'
+            command=['ffmpeg','-y','-i',Path(animation).resolve(),'-loop','1','-i',image,'-i',audio,'-filter_complex',graph,'-map','[v]','-map','2:a']
+        else:command=['ffmpeg','-y','-loop','1','-i',image,'-i',audio,'-vf',vf]
+        run(command+['-t',d,'-r','24','-c:v','libx264','-preset','fast','-crf','23','-pix_fmt','yuv420p','-c:a','aac','-af','loudnorm','-movflags','+faststart',out],cwd=out.parent)
         if abs(duration(out)-d)>1:raise RuntimeError('NC: render duration mismatch')
     def preview(self,jobdir):
         jobdir=Path(jobdir);jobdir.mkdir(parents=True,exist_ok=True)
@@ -313,6 +422,8 @@ class Factory:
             self.log('Unloading script model before image generation')
             request(self.cfg['ollama']+'/api/generate',{'model':self.cfg['model'],'prompt':'','stream':False,'keep_alive':0})
         clips=[]; report={'status':'REVIEW_REQUIRED','automatic_policy_clearance':False,'notes':'NC checks are heuristics. Verify facts, illustrations, rights, originality and disclosure.','shorts':[]}; seen=set()
+        animated=animation_indices(len(plan['scenes'])) if self.cfg.get('animation',False) and not demo else set()
+        report['animations']=[]
         for i,scene in enumerate(plan['scenes']):
             self.log(f'Scene {i+1}/{len(plan["scenes"])}')
             image=jobdir/f'image-{i:03}.png'; audio=jobdir/f'voice-{i:03}.wav'; clip=jobdir/f'scene-{i:03}.mp4'
@@ -322,9 +433,14 @@ class Factory:
             if not audio.exists():
                 if demo: run(['ffmpeg','-y','-f','lavfi','-i','sine=frequency=220:duration=4',audio])
                 else: self.voice(scene['narration'],audio)
+            animation=None
+            if i in animated:
+                animation=jobdir/f'animation-{i:03}.mp4'
+                self.animate(scene['image_prompt']+'. Slow natural motion illustrating: '+scene['narration'][:350],animation)
+                report['animations'].append({'scene':i+1,'file':animation.name,'review_required':True})
             if not clip.exists():
                 for attempt in range(2):
-                    try: self.render(image,audio,clip,text=None if demo else scene['narration']); break
+                    try: self.render(image,audio,clip,text=None if demo else scene['narration'],animation=animation); break
                     except RuntimeError:
                         clip.unlink(missing_ok=True)
                         if attempt: raise
@@ -339,7 +455,7 @@ class Factory:
                 reasons=skim(text,duration(shortaudio),seen)
                 row={'scene':i+1,'part':j+1,'text':text,'NC':reasons,'file':short.name if not reasons else None}
                 if not reasons and not short.exists():
-                    try:self.render(image,shortaudio,short,True,None if demo else text)
+                    try:self.render(image,shortaudio,short,True,None if demo else text,animation if j==0 else None)
                     except RuntimeError as e:
                         if 'NC:' not in str(e):raise
                         reasons.append(str(e));row['file']=None;short.unlink(missing_ok=True)

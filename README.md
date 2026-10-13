@@ -114,3 +114,19 @@ The interface now reports the running server version and explicitly shows docume
 HTML and API responses disable browser caching. The updater now identifies an already-running factory rather than describing the blocked update as a network failure. Closing a browser tab does not stop its Python server: close the factory command window before restarting the launcher. A launch check also refuses to silently reopen an old server when newer application files are installed. Previously exported videos are never rewritten by an update.
 
 To verify the change, restart the installed launcher, refresh the page and confirm the running-version banner is v0.6.1 or later. Choose a voice and use the development preview before producing a full documentary. The legacy Test pipeline checkbox uses a test tone and placeholder image and does not test the new narrator; use the dedicated development preview button instead.
+
+## v0.7.0 — experimental mixed animation
+
+The production form now offers Mix in three short Wan animations. It defaults to the requested topic How do farm animals grow? with mixed mode selected. Queue production from your Windows factory to start; no job is submitted to your PC from this chat. Preview and legacy demo modes do not run Wan.
+
+Mixed mode downloads three official Comfy-Org/Wan_2.1_ComfyUI_repackaged assets into your existing ComfyUI models directory on its first use: wan2.1_t2v_1.3B_fp16.safetensors, umt5_xxl_fp8_e4m3fn_scaled.safetensors and wan_2.1_vae.safetensors. Downloads are verified against Hugging Face repository SHA-256 metadata. No ComfyUI reinstall or new custom nodes are needed. Disk space is checked against the actual pending model sizes. Interrupted files restart their download; complete verified files are reused. Downloading can take a long time.
+
+Three distinct, evenly spaced scene positions use a 65-frame, 16-fps (~4-second), 832x480 Wan clip at 20 sampling steps. Smaller jobs may have fewer than three scenes. The animation begins the selected scene, followed by its still image for the rest of the narration. The first Short from that scene also reuses its animation. Other Shorts use stills. Voice and captions continue across the motion/still transition. Animations are silent; the normal narration supplies audio.
+
+The embedded native ComfyUI workflow follows the official Wan example, using CPU text encoding and tiled VAE decoding to reduce VRAM pressure. Models run sequentially, and ComfyUI is asked to free image/video weights between animation jobs. A clip has a one-hour polling timeout; output frame counts and duration are validated. Failures stop production rather than silently pretending the still-only output contains animation.
+
+This feature is experimental: its graph and mixed-video assembly were checked, including a real synthetic FFmpeg motion/still render. Actual Wan GPU inference has NOT been tested on the user's RTX 3060 or on the Windows CI runner, which lacks that GPU. Successful unit/voice tests do not establish animation quality or production speed. If ComfyUI reports an out-of-memory error, send its job log so the frame count/resolution can be adjusted. Animal anatomy and motion remain manual review items, recorded in review.json. Generated segments are illustrations, not real documentary footage.
+
+Official workflow reference: https://comfyanonymous.github.io/ComfyUI_examples/wan/
+Official model source: https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged
+Original model: https://github.com/Wan-Video/Wan2.1 (Apache 2.0).
